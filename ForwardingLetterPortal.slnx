@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ForwardingLetterPortal.API/ForwardingLetterPortal.API.csproj" />
+    <Project Path="src/ForwardingLetterPortal.Common/ForwardingLetterPortal.Common.csproj" />
+    <Project Path="src/ForwardingLetterPortal.DataAccess/ForwardingLetterPortal.DataAccess.csproj" />
+    <Project Path="src/ForwardingLetterPortal.Interface/ForwardingLetterPortal.Interface.csproj" />
+    <Project Path="src/ForwardingLetterPortal.Service/ForwardingLetterPortal.Service.csproj" />
+  </Folder>
+</Solution>
