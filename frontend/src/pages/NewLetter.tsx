@@ -3,19 +3,21 @@ import { Link, useNavigate } from 'react-router-dom'
 import { errorMessage } from '../api/client'
 import { createLetter, type CreateLetterRequest } from '../api/letters'
 import { Button, ErrorText, Field } from '../components/ui'
+import { useAuth } from '../context/AuthContext'
 
-const empty: CreateLetterRequest = {
-  recipientName: '',
-  recipientBankName: '',
-  recipientBranchName: '',
-  recipientAddress: '',
+const PURPOSES = ['ATM Card', 'Cheque Book', 'Other']
+
+const empty:CreateLetterRequest = {
   purpose: '',
-  documentDescription: '',
+  senderName: '',
 }
 
 export default function NewLetter() {
   const navigate = useNavigate()
-  const [form, setForm] = useState(empty)
+  const { user } = useAuth()
+  const [form, setForm] = useState<CreateLetterRequest>({ ...empty, senderName: user?.fullName ?? '' })
+  const [purposeChoice, setPurposeChoice] = useState('')
+  const [otherPurpose, setOtherPurpose] = useState('')
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
@@ -27,7 +29,10 @@ export default function NewLetter() {
     setError('')
     setLoading(true)
     try {
-      await createLetter(form)
+      await createLetter({
+        ...form,
+        purpose: purposeChoice === 'Other' ? otherPurpose.trim() : purposeChoice,
+      })
       navigate('/dashboard')
     } catch (err) {
       setError(errorMessage(err))
@@ -68,12 +73,11 @@ export default function NewLetter() {
             <div className="sticky top-24 rounded-2xl bg-gradient-to-br from-indigo-700 via-indigo-600 to-violet-700 p-8 text-white">
               <h2 className="text-xl font-semibold leading-snug">Before you submit</h2>
               <p className="mt-3 text-sm text-indigo-100 leading-relaxed">
-                Fill in the recipient details and purpose so the letter can be generated and dispatched to the correct bank branch.
+                Enter the sender name and purpose so the letter can be generated.
               </p>
               <ul className="mt-6 space-y-3 text-sm text-indigo-100">
                 {[
-                  'Use the official bank name as it appears on documents',
-                  'Include the full branch address when known',
+                  'Use your full name as it appears on bank records',
                   'Be specific about the purpose to avoid delays',
                 ].map((tip) => (
                   <li key={tip} className="flex items-start gap-2">
@@ -96,19 +100,25 @@ export default function NewLetter() {
               <ErrorText message={error} />
 
               <fieldset className="space-y-4">
-                <legend className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Recipient</legend>
-                <Field label="Recipient name" value={form.recipientName} onChange={set('recipientName')} required />
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <Field label="Bank" value={form.recipientBankName} onChange={set('recipientBankName')} required />
-                  <Field label="Branch" value={form.recipientBranchName} onChange={set('recipientBranchName')} required />
-                </div>
-                <Field label="Address" value={form.recipientAddress} onChange={set('recipientAddress')} required />
-              </fieldset>
-
-              <fieldset className="space-y-4">
                 <legend className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-400">Request</legend>
-                <Field label="Purpose" value={form.purpose} onChange={set('purpose')} required />
-                <Field label="Document description" value={form.documentDescription} onChange={set('documentDescription')} required />
+                <Field label="Sender name" value={form.senderName} onChange={set('senderName')} required />
+                <label className="block">
+                  <span className="block text-sm font-medium text-slate-700 mb-1">Purpose</span>
+                  <select
+                    value={purposeChoice}
+                    onChange={(e) => setPurposeChoice(e.target.value)}
+                    required
+                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200"
+                  >
+                    <option value="" disabled>Select a purpose</option>
+                    {PURPOSES.map((p) => (
+                      <option key={p} value={p}>{p}</option>
+                    ))}
+                  </select>
+                </label>
+                {purposeChoice === 'Other' && (
+                  <Field label="Specify purpose" value={otherPurpose} onChange={(e) => setOtherPurpose(e.target.value)} required />
+                )}
               </fieldset>
 
               <div className="flex flex-col-reverse gap-3 border-t border-slate-100 pt-6 sm:flex-row sm:justify-end">

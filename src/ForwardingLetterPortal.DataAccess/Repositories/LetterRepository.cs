@@ -35,6 +35,15 @@ namespace ForwardingLetterPortal.DataAccess.Repositories
             await db.SaveChangesAsync();
         }
 
+        public async Task RecordDownloadAsync(int letterId)
+        {
+            var letter = await db.GeneratedLetters.FindAsync(letterId);
+            if (letter is null) return;
+            letter.DownloadCount++;
+            letter.LastDownloadAt = DateTime.UtcNow;
+            await db.SaveChangesAsync();
+        }
+
         public async Task UpdateRequestStatusAsync(int requestId, string status)
         {
             var request = await db.ForwardingLetterRequests.FindAsync(requestId);

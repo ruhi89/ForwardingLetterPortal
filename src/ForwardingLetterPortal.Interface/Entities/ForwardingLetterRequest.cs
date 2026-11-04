@@ -8,6 +8,11 @@ namespace ForwardingLetterPortal.Interface.Entities
     {
         public int RequestId { get; set; }
         public int CustomerId { get; set; }
+        public string SenderName { get; set; } = null!;
+        public string SenderAccountNumber { get; set; } = null!;
+        public string SenderAddress { get; set; } = null!;
+        public string? SenderPhone { get; set; }
+        public string? SenderEmail { get; set; }
         public string RecipientName { get; set; } = null!;
         public string RecipientBankName { get; set; } = null!;
         public string RecipientBranchName { get; set; } = null!;

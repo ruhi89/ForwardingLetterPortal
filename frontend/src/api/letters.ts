@@ -1,12 +1,8 @@
 import client from './client'
 
 export interface CreateLetterRequest {
-  recipientName: string
-  recipientBankName: string
-  recipientBranchName: string
-  recipientAddress: string
   purpose: string
-  documentDescription: string
+  senderName: string
 }
 
 export interface LetterRequest {
@@ -17,6 +13,8 @@ export interface LetterRequest {
   status: string
   submittedAt: string
   hasGeneratedLetter: boolean
+  downloadCount: number
+  lastDownloadAt: string | null
 }
 
 export const createLetter = (data: CreateLetterRequest) =>

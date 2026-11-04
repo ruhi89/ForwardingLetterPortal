@@ -13,17 +13,27 @@ namespace ForwardingLetterPortal.Service
 {
     public class LetterService(LetterRepository repo) : ILetterService
     {
+        // Fixed values: not sent by the frontend. TODO: replace with the real values.
+        private const string FixedRecipientName = "Managing Director";
+        private const string FixedRecipientBankName = "Agrani Bank PLC";
+        private const string FixedRecipientBranchName = "Head Office";
+        private const string FixedRecipientAddress = " 9/D Dilkusha, Motijheel, Dhaka - 1000";
+        private const string FixedDocumentDescription = "Forwarding Letter for the attached documents.";
+
         public async Task<LetterRequestResponseDto> CreateRequestAsync(int customerId, CreateLetterRequestDto dto)
         {
             var request = new ForwardingLetterRequest
             {
                 CustomerId = customerId,
-                RecipientName = dto.RecipientName,
-                RecipientBankName = dto.RecipientBankName,
-                RecipientBranchName = dto.RecipientBranchName,
-                RecipientAddress = dto.RecipientAddress,
+                SenderName = dto.SenderName,
+                SenderAccountNumber = string.Empty,
+                SenderAddress = string.Empty,
+                RecipientName = FixedRecipientName,
+                RecipientBankName = FixedRecipientBankName,
+                RecipientBranchName = FixedRecipientBranchName,
+                RecipientAddress = FixedRecipientAddress,
                 Purpose = dto.Purpose,
-                DocumentDescription = dto.DocumentDescription,
+                DocumentDescription = FixedDocumentDescription,
                 Status = "Submitted",
                 SubmittedAt = DateTime.UtcNow
             };
@@ -58,6 +68,8 @@ namespace ForwardingLetterPortal.Service
             if (request.GeneratedLetter is null)
                 await repo.SaveLetterAsync(letter);
 
+            await repo.RecordDownloadAsync((request.GeneratedLetter ?? letter).LetterId);
+
             await repo.UpdateRequestStatusAsync(requestId, "Generated");
 
             return pdfBytes;
@@ -77,7 +89,6 @@ namespace ForwardingLetterPortal.Service
                 page.Content().Column(col =>
                 {
                     col.Spacing(12);
-                    col.Item().Text("Forwarding Letter").FontSize(18).Bold();
                     col.Item().Text($"Date: {DateTime.UtcNow:dd MMM yyyy}");
 
                     col.Item().Column(to =>
@@ -102,13 +113,13 @@ namespace ForwardingLetterPortal.Service
                         t.Span(ba.FullName).Bold();
                         t.Span($" (Account No: {ba.AccountNumber}):");
                     });
-                    col.Item().Text(r.DocumentDescription);
+                    // col.Item().Text(r.DocumentDescription);
                     col.Item().Text("Please acknowledge receipt.");
 
                     col.Item().PaddingTop(20).Column(sig =>
                     {
                         sig.Item().Text("Sincerely,");
-                        sig.Item().Text(ba.BranchName);
+                        sig.Item().Text(r.SenderName);
                     });
                 });
             })).GeneratePdf();
@@ -122,7 +133,9 @@ namespace ForwardingLetterPortal.Service
             Purpose = r.Purpose,
             Status = r.Status,
             SubmittedAt = r.SubmittedAt,
-            HasGeneratedLetter = r.GeneratedLetter is not null
+            HasGeneratedLetter = r.GeneratedLetter is not null,
+            DownloadCount = r.GeneratedLetter?.DownloadCount ?? 0,
+            LastDownloadAt = r.GeneratedLetter?.LastDownloadAt
         };
     }
 }
