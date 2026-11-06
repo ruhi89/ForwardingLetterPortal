@@ -1,141 +1,222 @@
-﻿using ForwardingLetterPortal.DataAccess.Repositories;
-using ForwardingLetterPortal.Interface.DTOs.Letter;
+using ForwardingLetterPortal.DataAccess.Repositories;
+using ForwardingLetterPortal.Interface.Constants;
+using ForwardingLetterPortal.Interface.DTOs.Common;
+using ForwardingLetterPortal.Interface.DTOs.Letters;
 using ForwardingLetterPortal.Interface.Entities;
+using ForwardingLetterPortal.Interface.Exceptions;
 using ForwardingLetterPortal.Interface.Interfaces;
-using QuestPDF.Fluent;
-using QuestPDF.Helpers;
-using QuestPDF.Infrastructure;
-using System;
-using System.Collections.Generic;
-using System.Text;
+using Microsoft.EntityFrameworkCore;
 
 namespace ForwardingLetterPortal.Service
 {
-    public class LetterService(LetterRepository repo) : ILetterService
+    public class LetterService(
+        LetterRepository letters,
+        VerificationRepository verifications,
+        CatalogRepository catalog,
+        OfficerRepository officers) : ILetterService
     {
-        // Fixed values: not sent by the frontend. TODO: replace with the real values.
-        private const string FixedRecipientName = "Managing Director";
-        private const string FixedRecipientBankName = "Agrani Bank PLC";
-        private const string FixedRecipientBranchName = "Head Office";
-        private const string FixedRecipientAddress = " 9/D Dilkusha, Motijheel, Dhaka - 1000";
-        private const string FixedDocumentDescription = "Forwarding Letter for the attached documents.";
+        // Both letter types are addressed to the MD & CEO.
+        private const string DefaultAddressedTo = "The Managing Director & CEO\nAgrani Bank PLC.\nHead Office, 9/D Dilkusha C/A, Dhaka-1000";
 
-        public async Task<LetterRequestResponseDto> CreateRequestAsync(int customerId, CreateLetterRequestDto dto)
+        public async Task<LetterDto> GenerateAsync(int officerId, GenerateLetterDto dto)
         {
-            var request = new ForwardingLetterRequest
+            if (!LetterTypes.IsValid(dto.LetterType))
+                throw new AppException($"LetterType must be {LetterTypes.CustomerCopy} or {LetterTypes.InternalCopy}.");
+
+            // Step 6/7 must be complete: a verified, unexpired OTP session owned by this officer.
+            var verification = await verifications.GetAsync(dto.VerificationId);
+            if (verification is null || verification.OfficerId != officerId)
+                throw AppException.NotFound("Verification not found.");
+            if (!VerificationService.IsUsable(verification))
+                throw new AppException("Customer verification is missing or has expired. Please verify again.");
+            var account = verification.BankAccount!;
+
+            var service = await catalog.GetServiceAsync(dto.ServiceId);
+            if (service is null || !service.IsActive) throw new AppException("Service not found.");
+            var purpose = await catalog.GetPurposeAsync(dto.PurposeId);
+            if (purpose is null || !purpose.IsActive || purpose.ServiceId != dto.ServiceId)
+                throw new AppException("Purpose does not belong to the selected service.");
+
+            var template = await catalog.FindActiveTemplateAsync(dto.ServiceId, dto.PurposeId, dto.LetterType)
+                ?? throw new AppException("No active letter template is configured for this service, purpose and letter type. Please contact the Super Admin.");
+
+            var officer = await officers.GetByIdAsync(officerId)
+                ?? throw AppException.NotFound("Officer not found.");
+
+            var enclosures = string.IsNullOrWhiteSpace(dto.Enclosures) ? null : dto.Enclosures.Trim();
+            if (dto.LetterType == LetterTypes.CustomerCopy && enclosures is not null)
+                throw new AppException("Enclosures are only allowed on the Internal Forwarding Copy.");
+
+            var now = DateTime.UtcNow;
+            var seq = await letters.NextReferenceSequenceAsync();
+            var reference = $"AGR/RET/{now.Year}/{seq:D6}";
+
+            var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
-                CustomerId = customerId,
-                SenderName = dto.SenderName,
-                SenderAccountNumber = string.Empty,
-                SenderAddress = string.Empty,
-                RecipientName = FixedRecipientName,
-                RecipientBankName = FixedRecipientBankName,
-                RecipientBranchName = FixedRecipientBranchName,
-                RecipientAddress = FixedRecipientAddress,
-                Purpose = dto.Purpose,
-                DocumentDescription = FixedDocumentDescription,
-                Status = "Submitted",
-                SubmittedAt = DateTime.UtcNow
+                ["CustomerName"] = account.FullName,
+                ["FatherName"] = account.FatherName ?? "",
+                ["AccountNumber"] = account.AccountNumber,
+                ["CustomerAddress"] = account.Address ?? "",
+                ["CustomerMobile"] = account.MobileNumber ?? "",
+                ["CustomerEmail"] = account.Email ?? "",
+                ["BranchName"] = account.BranchName,
+                ["ServiceName"] = service.ServiceName,
+                ["PurposeName"] = purpose.PurposeName,
+                ["ReferenceNumber"] = reference,
+                ["Date"] = now.AddHours(6).ToString("dd MMMM yyyy"),
+                ["OfficerName"] = officer.FullName,
+                ["OfficerDesignation"] = officer.Designation ?? "",
+                ["OfficerBranch"] = officer.BranchName
             };
 
-            await repo.AddRequestAsync(request);
-
-            return MapToDto(request);
-        }
-
-        public async Task<List<LetterRequestResponseDto>> GetMyRequestsAsync(int customerId)
-        {
-            var requests = await repo.GetByCustomerAsync(customerId);
-            return requests.Select(MapToDto).ToList();
-        }
-
-        public async Task<byte[]> GeneratePdfAsync(int requestId, int customerId)
-        {
-            var request = await repo.GetByIdAsync(requestId, customerId)
-                ?? throw new Exception("Request not found.");
-
-            var pdfBytes = BuildLetterPdf(request);
-
-            var letter = new GeneratedLetter
+            var letter = new ForwardingLetter
             {
-                RequestId = requestId,
-                CustomerId = customerId,
-                FilePath = $"letters/{requestId}.pdf",
-                FileSize = pdfBytes.Length,
-                GeneratedAt = DateTime.UtcNow
+                ReferenceNumber = reference,
+                LetterType = dto.LetterType,
+                VerificationId = verification.VerificationId,
+                OfficerId = officerId,
+                BankAccountId = account.BankAccountId,
+                ServiceId = service.ServiceId,
+                PurposeId = purpose.PurposeId,
+                TemplateId = template.TemplateId,
+                SubjectSnapshot = TemplateRenderer.Render(template.SubjectText, values),
+                BodySnapshot = TemplateRenderer.Render(template.BodyText, values),
+                CustomerName = account.FullName,
+                AccountNumber = account.AccountNumber,
+                CustomerAddress = account.Address,
+                CustomerMobile = account.MobileNumber,
+                CustomerEmail = account.Email,
+                BranchName = account.BranchName,
+                ServiceName = service.ServiceName,
+                PurposeName = purpose.PurposeName,
+                AddressedTo = DefaultAddressedTo,
+                Enclosures = enclosures,
+                Status = LetterStatus.Generated,
+                GeneratedAt = now,
+                PrintCount = 0
             };
 
-            if (request.GeneratedLetter is null)
-                await repo.SaveLetterAsync(letter);
-
-            await repo.RecordDownloadAsync((request.GeneratedLetter ?? letter).LetterId);
-
-            await repo.UpdateRequestStatusAsync(requestId, "Generated");
-
-            return pdfBytes;
+            await letters.AddAsync(letter);
+            letter.Officer = officer;
+            return Map(letter);
         }
 
-        private static byte[] BuildLetterPdf(ForwardingLetterRequest r)
+        public async Task<PagedResult<LetterListItemDto>> ListAsync(int officerId, bool isSuperAdmin, LetterQueryDto q)
         {
-            QuestPDF.Settings.License = LicenseType.Community;
-            var ba = r.Customer.BankAccount;
+            var page = Math.Max(1, q.Page);
+            var pageSize = Math.Clamp(q.PageSize, 1, 100);
 
-            return Document.Create(doc => doc.Page(page =>
+            var query = letters.Query();
+
+            if (isSuperAdmin)
             {
-                page.Size(PageSizes.A4);
-                page.Margin(50);
-                page.DefaultTextStyle(t => t.FontSize(11));
+                if (q.OfficerId is { } oid) query = query.Where(l => l.OfficerId == oid);
+            }
+            else
+            {
+                query = query.Where(l => l.OfficerId == officerId);
+            }
 
-                page.Content().Column(col =>
+            if (!string.IsNullOrWhiteSpace(q.Search))
+            {
+                var s = q.Search.Trim();
+                query = query.Where(l => l.ReferenceNumber.Contains(s)
+                                      || l.AccountNumber.Contains(s)
+                                      || l.CustomerName.Contains(s));
+            }
+            if (!string.IsNullOrWhiteSpace(q.LetterType)) query = query.Where(l => l.LetterType == q.LetterType);
+            if (q.ServiceId is { } sid) query = query.Where(l => l.ServiceId == sid);
+            if (q.From is { } from) query = query.Where(l => l.GeneratedAt >= from.Date);
+            if (q.To is { } to) query = query.Where(l => l.GeneratedAt < to.Date.AddDays(1));
+
+            var total = await query.CountAsync();
+            var items = await query
+                .OrderByDescending(l => l.GeneratedAt).ThenByDescending(l => l.LetterId)
+                .Skip((page - 1) * pageSize).Take(pageSize)
+                .Select(l => new LetterListItemDto
                 {
-                    col.Spacing(12);
-                    col.Item().Text($"Date: {DateTime.UtcNow:dd MMM yyyy}");
+                    LetterId = l.LetterId,
+                    ReferenceNumber = l.ReferenceNumber,
+                    LetterType = l.LetterType,
+                    CustomerName = l.CustomerName,
+                    AccountNumber = l.AccountNumber,
+                    ServiceName = l.ServiceName,
+                    PurposeName = l.PurposeName,
+                    OfficerName = l.Officer.FullName,
+                    Status = l.Status,
+                    PrintCount = l.PrintCount,
+                    GeneratedAt = l.GeneratedAt
+                })
+                .ToListAsync();
 
-                    col.Item().Column(to =>
-                    {
-                        to.Item().Text("To,");
-                        to.Item().Text(r.RecipientName);
-                        to.Item().Text(r.RecipientBankName);
-                        to.Item().Text(r.RecipientBranchName);
-                        to.Item().Text(r.RecipientAddress);
-                    });
-
-                    col.Item().Text(t =>
-                    {
-                        t.Span("Subject: ").Bold();
-                        t.Span(r.Purpose);
-                    });
-
-                    col.Item().Text("Dear Sir/Madam,");
-                    col.Item().Text(t =>
-                    {
-                        t.Span("We are forwarding the following documents on behalf of ");
-                        t.Span(ba.FullName).Bold();
-                        t.Span($" (Account No: {ba.AccountNumber}):");
-                    });
-                    // col.Item().Text(r.DocumentDescription);
-                    col.Item().Text("Please acknowledge receipt.");
-
-                    col.Item().PaddingTop(20).Column(sig =>
-                    {
-                        sig.Item().Text("Sincerely,");
-                        sig.Item().Text(r.SenderName);
-                    });
-                });
-            })).GeneratePdf();
+            return new PagedResult<LetterListItemDto> { Items = items, Total = total, Page = page, PageSize = pageSize };
         }
 
-        private static LetterRequestResponseDto MapToDto(ForwardingLetterRequest r) => new()
+        public async Task<LetterDto> GetAsync(int officerId, bool isSuperAdmin, int letterId)
+            => Map(await GetAccessibleAsync(officerId, isSuperAdmin, letterId));
+
+        public async Task<byte[]> GetPdfAsync(int officerId, bool isSuperAdmin, int letterId, string action, string? ipAddress)
         {
-            RequestId = r.RequestId,
-            RecipientName = r.RecipientName,
-            RecipientBankName = r.RecipientBankName,
-            Purpose = r.Purpose,
-            Status = r.Status,
-            SubmittedAt = r.SubmittedAt,
-            HasGeneratedLetter = r.GeneratedLetter is not null,
-            DownloadCount = r.GeneratedLetter?.DownloadCount ?? 0,
-            LastDownloadAt = r.GeneratedLetter?.LastDownloadAt
+            var letter = await GetAccessibleAsync(officerId, isSuperAdmin, letterId);
+            if (letter.Status == LetterStatus.Cancelled)
+                throw new AppException("This letter has been cancelled.");
+
+            var pdf = LetterPdfBuilder.Build(letter);
+
+            await letters.AddPrintLogAsync(new LetterPrintLog
+            {
+                LetterId = letterId,
+                OfficerId = officerId,
+                Action = action,
+                IpAddress = ipAddress,
+                ActionAt = DateTime.UtcNow
+            });
+
+            if (action == PrintActions.Print)
+            {
+                letter.PrintCount++;
+                letter.FirstPrintedAt ??= DateTime.UtcNow;
+                letter.Status = LetterStatus.Printed;
+                await letters.SaveAsync();
+            }
+
+            return pdf;
+        }
+
+        private async Task<ForwardingLetter> GetAccessibleAsync(int officerId, bool isSuperAdmin, int letterId)
+        {
+            var letter = await letters.GetAsync(letterId);
+            // Another officer's letter is reported as not found.
+            if (letter is null || (!isSuperAdmin && letter.OfficerId != officerId))
+                throw AppException.NotFound("Letter not found.");
+            return letter;
+        }
+
+        private static LetterDto Map(ForwardingLetter l) => new()
+        {
+            LetterId = l.LetterId,
+            ReferenceNumber = l.ReferenceNumber,
+            LetterType = l.LetterType,
+            Status = l.Status,
+            CustomerName = l.CustomerName,
+            AccountNumber = l.AccountNumber,
+            CustomerAddress = l.CustomerAddress,
+            CustomerMobile = l.CustomerMobile,
+            CustomerEmail = l.CustomerEmail,
+            BranchName = l.BranchName,
+            ServiceName = l.ServiceName,
+            PurposeName = l.PurposeName,
+            TemplateId = l.TemplateId,
+            Subject = l.SubjectSnapshot,
+            Body = l.BodySnapshot,
+            AddressedTo = l.AddressedTo,
+            Enclosures = l.Enclosures,
+            OfficerId = l.OfficerId,
+            OfficerName = l.Officer.FullName,
+            OfficerEmployeeId = l.Officer.EmployeeId,
+            GeneratedAt = l.GeneratedAt,
+            FirstPrintedAt = l.FirstPrintedAt,
+            PrintCount = l.PrintCount
         };
     }
 }
